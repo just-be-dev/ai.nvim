@@ -157,3 +157,7 @@ vim.keymap.set("v", "<leader>ai", ":PiAskSelection<CR>", { desc = "Ask pi (selec
 ## License
 
 MIT
+
+## Related
+
+If you like this plugin you might like my agent coordinator app: [Fractal](https://github.com/pablopunk/fractal). It can run pi, claude, codex, opencode... actually, any cli you want; you can even automate neovim as if it was an agent!
