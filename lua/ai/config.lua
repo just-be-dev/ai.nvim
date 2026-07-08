@@ -10,6 +10,7 @@ M.defaults = {
   agent = {
     name = "omp",
     command = { "omp", "acp" },
+    resume_command = { "omp", "--resume" },
     cwd = nil,
     env = nil,
   },
@@ -83,6 +84,12 @@ function M.validate(opts)
       validate_string_list("agent.command", opts.agent.command)
       if #opts.agent.command == 0 then
         error("ai.nvim: agent.command must not be empty")
+      end
+    end
+    if opts.agent.resume_command ~= nil then
+      validate_string_list("agent.resume_command", opts.agent.resume_command)
+      if #opts.agent.resume_command == 0 then
+        error("ai.nvim: agent.resume_command must not be empty")
       end
     end
     if opts.agent.cwd ~= nil and type(opts.agent.cwd) ~= "string" then

@@ -5,8 +5,8 @@ A small Neovim ACP client for code agents. It defaults to [Oh My Pi](https://omp
 ## Features
 
 - **ACP-first**: Talks JSON-RPC ACP over stdio instead of a tool-specific private UI stream.
-- **Single command namespace**: Use `:Ai ...`; no `:Pi...` or convenience command aliases.
-- **Statusline-friendly**: Agent progress is exposed through `require("ai").statusline()` for your footer/statusline.
+- **Single command namespace**: Use `:Ai ...` for prompts, status, cancellation, and transcript controls.
+- **Transient progress indicator**: Agent progress appears on the line above the statusline while the agent is running.
 - **On-demand transcript**: Open a bottom/right split only when you want to watch the agent work.
 - **Editor-aware files**: ACP filesystem reads see unsaved Neovim buffers; ACP writes update loaded buffers.
 - **Client-side terminal bridge**: ACP terminal requests run through Neovim and can be rendered in the transcript.
@@ -29,7 +29,7 @@ Use your plugin manager of choice and point it at this repository.
 
 ```lua
 {
-  "your-name/ai.nvim",
+  "just-be-dev/ai.nvim",
   config = function()
     require("ai").setup()
   end,
@@ -52,6 +52,7 @@ require("ai").setup({
   agent = {
     name = "omp",
     command = { "omp", "acp" },
+    resume_command = { "omp", "--resume" },
     cwd = nil, -- defaults to vim.fn.getcwd()
     env = nil,
   },
@@ -94,7 +95,7 @@ require("ai").setup({
   agent = {
     name = "my-agent",
     command = { "my-agent", "acp" },
-  },
+    resume_command = { "my-agent", "--resume" }, -- command prefix used by :Ai open
 })
 ```
 
@@ -108,9 +109,9 @@ require("ai").setup({
 | `:Ai selection` | Prompt using the current visual selection and nearby context. |
 | `:Ai cancel` | Cancel the active ACP prompt. |
 | `:Ai status` | Echo current agent status. |
-| `:Ai open` | Open the agent transcript split. |
-| `:Ai close` | Close the transcript split without cancelling the agent. |
-| `:Ai toggle` | Toggle the transcript split. |
+| `:Ai open` | Open an OMP TUI terminal with `agent.resume_command` plus the ACP session id. |
+| `:Ai close` | Close the resumed TUI terminal without cancelling the agent. |
+| `:Ai toggle` | Toggle the resumed TUI terminal. |
 
 Neovim user commands must start with an uppercase letter, so `:ai` cannot be implemented as a normal command. Use `:Ai`.
 
@@ -123,27 +124,11 @@ vim.keymap.set("n", "<leader>ai", "<cmd>Ai ask<CR>", { desc = "Ask AI" })
 vim.keymap.set("v", "<leader>ai", "<cmd>Ai selection<CR>", { desc = "Ask AI about selection" })
 ```
 
-## Statusline/footer
+## Progress indicator
 
-`ai.nvim` does not mutate your statusline. Add the exported component where you want it.
+`ai.nvim` shows a compact progress indicator on the right side of the current window's bottom content line while an agent is running. It is a non-focusable overlay, so users do not need to edit their statusline configuration.
 
-Plain statusline example:
-
-```lua
-vim.o.statusline = vim.o.statusline .. "%{%v:lua.require'ai'.statusline()%}"
-```
-
-lualine example:
-
-```lua
-require("lualine").setup({
-  sections = {
-    lualine_x = {
-      require("ai").statusline,
-    },
-  },
-})
-```
+`require("ai").statusline()` remains available for users who still want to place the same text in a custom statusline/footer.
 
 ## Behavior
 
@@ -154,7 +139,7 @@ require("lualine").setup({
 - `fs/write_text_file` writes to disk and updates matching loaded buffers.
 - `terminal/create` starts commands with `vim.system`; output is retained for `terminal/output` and the transcript view.
 - Permission requests use `vim.ui.select` unless `permissions.auto_approve = true`.
-- Progress is passive by default: statusline state changes, no modal/floating progress window opens.
+- Progress is passive by default: a transient non-focusable indicator is shown while the agent is running; no modal progress window opens.
 
 ## Public API
 

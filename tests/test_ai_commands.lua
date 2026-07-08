@@ -31,6 +31,108 @@ local function setup_buffer(lines, filename)
   )
 end
 
+local function setup_terminal_resume_env(auto_open)
+  setup_test_env(string.format([[
+    local args_file = vim.fn.tempname()
+    local script = vim.fn.tempname() .. ".sh"
+    vim.fn.writefile({
+      "#!/bin/sh",
+      "args_file=$1",
+      "shift",
+      "printf '%%s\\n' \"$@\" > \"$args_file\"",
+      "printf 'resume command started\\n'",
+      "sleep 60",
+    }, script)
+    _G.__ai_resume_args_file = args_file
+    _G.__ai_resume_script = script
+    require("ai").setup({
+      agent = {
+        resume_command = { "sh", script, args_file, "--resume" },
+      },
+      ui = {
+        window = { auto_open = %s },
+      },
+    })
+  ]], tostring(auto_open == true)))
+end
+
+local function ai_view_state()
+  return child.lua([[
+    local state = {
+      terminals = {},
+      terminal_buffers = {},
+      transcript_windows = 0,
+    }
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local bufnr = vim.api.nvim_win_get_buf(win)
+      local name = vim.api.nvim_buf_get_name(bufnr)
+      if vim.bo[bufnr].buftype == "terminal" then
+        table.insert(state.terminals, {
+          win = win,
+          bufnr = bufnr,
+          name = name,
+          job_id = vim.b[bufnr].terminal_job_id,
+        })
+      elseif name:match("ai%-session://transcript$") then
+        state.transcript_windows = state.transcript_windows + 1
+      end
+    end
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_loaded(bufnr) and vim.bo[bufnr].buftype == "terminal" then
+        table.insert(state.terminal_buffers, {
+          bufnr = bufnr,
+          name = vim.api.nvim_buf_get_name(bufnr),
+          job_id = vim.b[bufnr].terminal_job_id,
+        })
+      end
+    end
+    return state
+  ]])
+end
+
+local function wait_for_terminal_view()
+  local ok = child.lua([[
+    return vim.wait(1000, function()
+      for _, win in ipairs(vim.api.nvim_list_wins()) do
+        local bufnr = vim.api.nvim_win_get_buf(win)
+        if vim.bo[bufnr].buftype == "terminal" then
+          return true
+        end
+      end
+      return false
+    end, 10)
+  ]])
+  MiniTest.expect.equality(ok, true)
+  return ai_view_state()
+end
+
+local function wait_for_resume_args(expected)
+  local ok = child.lua([[
+    local expected = ...
+    return vim.wait(1000, function()
+      if vim.fn.filereadable(_G.__ai_resume_args_file) ~= 1 then
+        return false
+      end
+      local actual = vim.fn.readfile(_G.__ai_resume_args_file)
+      if #actual ~= #expected then
+        return false
+      end
+      for i, value in ipairs(expected) do
+        if actual[i] ~= value then
+          return false
+        end
+      end
+      return true
+    end, 10)
+  ]], { expected })
+  MiniTest.expect.equality(ok, true)
+  return child.lua_get([[vim.fn.readfile(_G.__ai_resume_args_file)]])
+end
+
+local function resume_args_file_exists()
+  return child.lua_get([[vim.fn.filereadable(_G.__ai_resume_args_file) == 1]])
+end
+
 local function set_visual_marks(start_line, end_line)
   child.api.nvim_buf_set_mark(0, "<", start_line, 0, {})
   child.api.nvim_buf_set_mark(0, ">", end_line, 999, {})
@@ -57,6 +159,31 @@ end
 local function last_notification()
   local items = notifications()
   return items[#items]
+end
+
+local function floating_windows_matching(pattern)
+  return child.lua([[
+    local pattern = ...
+    local matches = {}
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local config = vim.api.nvim_win_get_config(win)
+      if config.relative ~= "" then
+        local bufnr = vim.api.nvim_win_get_buf(win)
+        local text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+        if text:match(pattern) then
+          table.insert(matches, {
+            win = win,
+            text = text,
+            relative = config.relative,
+            anchor = config.anchor,
+            focusable = config.focusable,
+            height = config.height,
+          })
+        end
+      end
+    end
+    return matches
+  ]], { pattern })
 end
 
 local function install_system_mock()
@@ -385,7 +512,7 @@ local function test_ai_selection_dispatches_selected_context()
   MiniTest.expect.equality(prompt.params.prompt[2].text:match("line5"), nil)
 end
 
-local function test_statusline_reports_active_tool_and_done_state()
+local function test_running_agent_progress_uses_transient_floating_indicator()
   setup_test_env()
   setup_buffer({ "print('status')" }, "/test/status.lua")
 
@@ -403,49 +530,67 @@ local function test_statusline_reports_active_tool_and_done_state()
     },
   })
 
-  local running_line = child.lua_get([[require("ai").statusline()]])
-  MiniTest.expect.no_equality(running_line:match("Editing status%.lua"), nil)
+  local active_indicators = floating_windows_matching("Editing status%.lua")
+  MiniTest.expect.equality(#active_indicators, 1)
+  MiniTest.expect.equality(active_indicators[1].relative, "win")
+  MiniTest.expect.equality(active_indicators[1].anchor, "SE")
+  MiniTest.expect.equality(active_indicators[1].focusable, false)
+  MiniTest.expect.equality(active_indicators[1].height, 1)
 
   finish_prompt(system, prompt)
-  local finished_line = child.lua_get([[require("ai").statusline()]])
-  MiniTest.expect.equality(finished_line, "AI done")
+  MiniTest.expect.equality(#floating_windows_matching("Editing status%.lua"), 0)
+  MiniTest.expect.equality(child.lua_get([[require("ai").statusline()]]), "AI done")
 end
 
-local function test_open_close_toggle_manage_transcript_window()
-  setup_test_env()
-  setup_buffer({ "print('transcript')" }, "/test/transcript.lua")
+local function test_open_close_toggle_manage_terminal_resume_window()
+  setup_terminal_resume_env(false)
+  setup_buffer({ "print('terminal')" }, "/test/terminal.lua")
 
-  local system = start_prompt("show transcript")
-  local prompt = establish_session(system, "sess-transcript")
-
-  agent_notification(system, "session/update", {
-    sessionId = "sess-transcript",
-    update = {
-      sessionUpdate = "agent_message_chunk",
-      messageId = "msg-1",
-      content = { type = "text", text = "Hello from the agent" },
-    },
-  })
+  local system = start_prompt("open terminal")
+  local prompt = establish_session(system, "sess-terminal")
 
   child.cmd("Ai open")
-  local open_state = child.lua([[
-    for _, win in ipairs(vim.api.nvim_list_wins()) do
-      local bufnr = vim.api.nvim_win_get_buf(win)
-      if vim.api.nvim_buf_get_name(bufnr):match("ai%-session://transcript$") then
-        return { win_valid = true, text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n") }
-      end
-    end
-    return { win_valid = false, text = "" }
-  ]])
-  MiniTest.expect.equality(open_state.win_valid, true)
-  MiniTest.expect.no_equality(open_state.text:match("Hello from the agent"), nil)
+  local open_state = wait_for_terminal_view()
+  MiniTest.expect.equality(#open_state.terminals, 1)
+  MiniTest.expect.equality(#open_state.terminal_buffers, 1)
+  MiniTest.expect.equality(open_state.transcript_windows, 0)
+  MiniTest.expect.equality(wait_for_resume_args({ "--resume", "sess-terminal" }), { "--resume", "sess-terminal" })
 
   child.cmd("Ai close")
-  MiniTest.expect.equality(child.lua([[for _, win in ipairs(vim.api.nvim_list_wins()) do local bufnr = vim.api.nvim_win_get_buf(win); if vim.api.nvim_buf_get_name(bufnr):match("ai%-session://transcript$") then return true end end; return false]]), false)
+  local closed_state = ai_view_state()
+  MiniTest.expect.equality(#closed_state.terminals, 0)
+  MiniTest.expect.equality(#closed_state.terminal_buffers, 0)
 
   child.cmd("Ai toggle")
-  MiniTest.expect.equality(child.lua([[for _, win in ipairs(vim.api.nvim_list_wins()) do local bufnr = vim.api.nvim_win_get_buf(win); if vim.api.nvim_buf_get_name(bufnr):match("ai%-session://transcript$") then return true end end; return false]]), true)
+  local toggled_state = wait_for_terminal_view()
+  MiniTest.expect.equality(#toggled_state.terminals, 1)
+  MiniTest.expect.equality(#toggled_state.terminal_buffers, 1)
+  MiniTest.expect.equality(toggled_state.transcript_windows, 0)
 
+  child.cmd("Ai close")
+  finish_prompt(system, prompt)
+end
+
+local function test_auto_open_defers_terminal_resume_until_acp_session_exists()
+  setup_terminal_resume_env(true)
+  setup_buffer({ "print('auto open')" }, "/test/auto_open.lua")
+
+  local system = start_prompt("auto open terminal")
+  MiniTest.expect.equality(#ai_view_state().terminals, 0)
+  MiniTest.expect.equality(#ai_view_state().terminal_buffers, 0)
+  MiniTest.expect.equality(resume_args_file_exists(), false)
+
+  local prompt = establish_session(system, "sess-auto-open")
+  local open_state = wait_for_terminal_view()
+  MiniTest.expect.equality(#open_state.terminals, 1)
+  MiniTest.expect.equality(#open_state.terminal_buffers, 1)
+  MiniTest.expect.equality(open_state.transcript_windows, 0)
+  MiniTest.expect.equality(wait_for_resume_args({ "--resume", "sess-auto-open" }), { "--resume", "sess-auto-open" })
+
+  child.cmd("Ai close")
+  local closed_state = ai_view_state()
+  MiniTest.expect.equality(#closed_state.terminals, 0)
+  MiniTest.expect.equality(#closed_state.terminal_buffers, 0)
   finish_prompt(system, prompt)
 end
 
@@ -641,8 +786,9 @@ T["commands"][":Ai selection sends selected buffer context"] = test_ai_selection
 
 T["acp"] = MiniTest.new_set()
 T["acp"][":Ai ask performs initialize/session/prompt lifecycle"] = test_ai_ask_runs_acp_initialize_session_prompt_lifecycle
-T["acp"]["statusline reports active tool and done state"] = test_statusline_reports_active_tool_and_done_state
-T["acp"]["open close toggle manage transcript window"] = test_open_close_toggle_manage_transcript_window
+T["acp"]["running agent progress uses transient floating indicator"] = test_running_agent_progress_uses_transient_floating_indicator
+T["acp"]["open close toggle manage terminal resume window"] = test_open_close_toggle_manage_terminal_resume_window
+T["acp"]["auto open defers terminal resume until ACP session exists"] = test_auto_open_defers_terminal_resume_until_acp_session_exists
 T["acp"]["filesystem bridge reads unsaved buffers and writes loaded buffers"] = test_fs_bridge_reads_unsaved_buffer_slices_and_updates_loaded_buffer_on_write
 T["acp"]["terminal bridge create output wait kill release"] = test_terminal_bridge_create_output_wait_kill_and_release
 T["acp"]["permission request returns selected option"] = test_permission_request_returns_selected_user_option

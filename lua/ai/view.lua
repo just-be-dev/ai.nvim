@@ -5,6 +5,8 @@ local M = {}
 local bufnr = nil
 local winnr = nil
 local attached_session = nil
+local terminal_session_id = nil
+local pending_open = false
 
 local function valid_buf()
   return bufnr and vim.api.nvim_buf_is_valid(bufnr)
@@ -14,23 +16,23 @@ local function valid_win()
   return winnr and vim.api.nvim_win_is_valid(winnr)
 end
 
-local function ensure_buffer()
+local function close_buffer()
   if valid_buf() then
-    return bufnr
+    pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
   end
-  bufnr = vim.api.nvim_create_buf(false, true)
-  vim.bo[bufnr].buftype = "nofile"
-  vim.bo[bufnr].bufhidden = "hide"
-  vim.bo[bufnr].swapfile = false
-  vim.bo[bufnr].modifiable = false
-  vim.bo[bufnr].filetype = "ai-agent"
-  vim.api.nvim_buf_set_name(bufnr, "ai-session://transcript")
-  return bufnr
+  bufnr = nil
+  terminal_session_id = nil
+end
+
+local function close_window()
+  if valid_win() then
+    pcall(vim.api.nvim_win_close, winnr, true)
+  end
+  winnr = nil
 end
 
 local function open_window()
   local cfg = config.get().ui.window
-  local buf = ensure_buffer()
   if valid_win() then
     vim.api.nvim_set_current_win(winnr)
     return
@@ -45,130 +47,87 @@ local function open_window()
     winnr = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_height(winnr, cfg.height)
   end
-  vim.api.nvim_win_set_buf(winnr, buf)
-  vim.wo[winnr].wrap = true
-  vim.wo[winnr].linebreak = true
 end
 
-local function append_wrapped(lines, prefix, text)
-  text = tostring(text or "")
-  if text == "" then
-    return
-  end
-  local first = true
-  for line in (text .. "\n"):gmatch("(.-)\n") do
-    if first then
-      lines[#lines + 1] = prefix .. line
-      first = false
-    else
-      lines[#lines + 1] = string.rep(" ", #prefix) .. line
-    end
-  end
+local function resume_command(session_id)
+  local cmd = vim.deepcopy(config.get().agent.resume_command or { "omp", "--resume" })
+  cmd[#cmd + 1] = session_id
+  return cmd
 end
 
-local function render_tool(lines, item)
-  local status = item.status or "pending"
-  local title = item.title or item.toolName or item.id or "tool"
-  lines[#lines + 1] = string.format("  [%s] %s", status, title)
-  if item.kind then
-    lines[#lines + 1] = "      kind: " .. item.kind
+local function terminal_env()
+  local env = config.get().agent.env
+  if not env then
+    return nil
   end
-  if item.content then
-    for _, content in ipairs(item.content) do
-      if content.type == "content" and content.content and content.content.text then
-        append_wrapped(lines, "      ", content.content.text)
-      elseif content.type == "terminal" and content.terminalId and attached_session then
-        local terminal = attached_session.terminals[content.terminalId]
-        if terminal then
-          append_wrapped(lines, "      ", terminal.output or "")
-        else
-          lines[#lines + 1] = "      terminal: " .. content.terminalId
-        end
-      elseif content.type == "diff" and content.path then
-        lines[#lines + 1] = "      diff: " .. content.path
-      end
-    end
+
+  local out = {}
+  for key, value in pairs(env) do
+    out[tostring(key)] = tostring(value)
   end
+  return out
 end
 
-local function render(session)
-  local lines = {}
-  lines[#lines + 1] = string.format("AI · %s · %s", session and session.agent or "agent", session and (session.acp_session_id or "no-session") or "idle")
-  lines[#lines + 1] = string.rep("─", 72)
-
-  if not session then
-    lines[#lines + 1] = "Idle"
-    return lines
+local function open_terminal(session)
+  local session_id = session and session.acp_session_id
+  if not session_id then
+    pending_open = true
+    return false
   end
 
-  lines[#lines + 1] = "Status: " .. tostring(session.status)
-  if session.last_error then
-    lines[#lines + 1] = "Error: " .. tostring(session.last_error)
+  if valid_win() and valid_buf() and terminal_session_id == session_id then
+    vim.api.nvim_set_current_win(winnr)
+    return true
   end
-  lines[#lines + 1] = ""
 
-  for _, item in ipairs(session.transcript or {}) do
-    if item.kind == "message" then
-      local role = item.role == "user" and "User" or "Agent"
-      lines[#lines + 1] = role
-      append_wrapped(lines, "  ", item.text)
-      lines[#lines + 1] = ""
-    elseif item.kind == "plan" then
-      lines[#lines + 1] = "Plan"
-      for _, entry in ipairs(item.entries or {}) do
-        local status = entry.status or "pending"
-        local content = entry.content or entry.title or tostring(entry)
-        lines[#lines + 1] = string.format("  [%s] %s", status, content)
-      end
-      lines[#lines + 1] = ""
-    elseif item.kind == "tool" then
-      lines[#lines + 1] = "Tool"
-      render_tool(lines, item)
-      lines[#lines + 1] = ""
-    elseif item.kind == "terminal" then
-      lines[#lines + 1] = "Terminal " .. tostring(item.terminal_id)
-      append_wrapped(lines, "  ", item.output or "")
-      lines[#lines + 1] = ""
-    elseif item.kind == "permission" then
-      lines[#lines + 1] = "Permission requested"
-      if item.tool_call and item.tool_call.title then
-        lines[#lines + 1] = "  " .. item.tool_call.title
-      end
-      lines[#lines + 1] = ""
-    elseif item.kind == "error" then
-      lines[#lines + 1] = "Error"
-      append_wrapped(lines, "  ", item.message)
-      lines[#lines + 1] = ""
+  M.close()
+  open_window()
+
+  bufnr = vim.api.nvim_create_buf(false, true)
+  terminal_session_id = session_id
+  vim.api.nvim_buf_set_name(bufnr, "ai-session://omp-resume/" .. session_id)
+  vim.bo[bufnr].bufhidden = "wipe"
+  vim.bo[bufnr].filetype = "ai-agent-terminal"
+  vim.api.nvim_win_set_buf(winnr, bufnr)
+
+  local cfg = config.get()
+  vim.api.nvim_buf_call(bufnr, function()
+    local job_id = vim.fn.termopen(resume_command(session_id), {
+      cwd = cfg.agent.cwd or vim.fn.getcwd(),
+      env = terminal_env(),
+    })
+    if job_id <= 0 then
+      vim.notify("Failed to open AI terminal", vim.log.levels.ERROR)
     end
-  end
-  return lines
+  end)
+
+  vim.cmd("startinsert")
+  return true
 end
 
 function M.update(session)
   attached_session = session or attached_session
-  if not valid_buf() then
-    return
-  end
-  local lines = render(attached_session)
-  vim.bo[bufnr].modifiable = true
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
-  vim.bo[bufnr].modifiable = false
-  if valid_win() then
-    pcall(vim.api.nvim_win_set_cursor, winnr, { math.max(1, #lines), 0 })
+  if pending_open and attached_session and attached_session.acp_session_id then
+    pending_open = false
+    open_terminal(attached_session)
   end
 end
 
 function M.open(session)
   attached_session = session or attached_session
-  open_window()
-  M.update(attached_session)
+  if not attached_session then
+    vim.notify("No AI session to open", vim.log.levels.INFO)
+    return
+  end
+  if not open_terminal(attached_session) then
+    vim.notify("AI session is starting; terminal will open when ready", vim.log.levels.INFO)
+  end
 end
 
 function M.close()
-  if valid_win() then
-    pcall(vim.api.nvim_win_close, winnr, true)
-  end
-  winnr = nil
+  pending_open = false
+  close_window()
+  close_buffer()
 end
 
 function M.toggle(session)
