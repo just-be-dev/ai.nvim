@@ -1,10 +1,10 @@
--- Minimal init.lua for testing pi.nvim
+-- Minimal init.lua for testing ai.nvim
 -- This is loaded by the child Neovim process during tests
 
 -- Set up a minimal runtime path
 vim.opt.runtimepath:append(".")
 
--- Add mini.test to runtimepath if it exists (for running via Makefile)
+-- Add mini.test to runtimepath if it exists (for running via mise)
 local mini_test_path = "./deps/mini.test"
 if vim.fn.isdirectory(mini_test_path) == 1 then
   vim.opt.runtimepath:append(mini_test_path)
@@ -29,8 +29,8 @@ vim.g.maplocalleader = " "
 -- Silence notifications during tests
 vim.notify = function(msg, level, opts)
   -- Store notifications for test verification
-  if not _G.__pi_test_notifications then
-    _G.__pi_test_notifications = {}
+  if not _G.__ai_test_notifications then
+    _G.__ai_test_notifications = {}
   end
-  table.insert(_G.__pi_test_notifications, { msg = msg, level = level })
+  table.insert(_G.__ai_test_notifications, { msg = msg, level = level })
 end

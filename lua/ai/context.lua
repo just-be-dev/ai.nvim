@@ -1,13 +1,13 @@
---- Context builders for pi.nvim prompts.
+--- Context builders for ai.nvim prompts.
 local M = {}
 
-local SYSTEM_PROMPT = [[You are running inside the pi.nvim Neovim plugin. The user has sent a request and will not be able to reply back. You must complete the task immediately without asking any questions or requesting clarification. Take action now and do what was asked.
+local SYSTEM_PROMPT = [[You are running inside the ai.nvim Neovim plugin. The user has sent a request and will not be able to reply back. You must complete the task immediately without asking any questions or requesting clarification. Take action now and do what was asked.
 
 IMPORTANT: Any file content included in the provided Context comes from the user's current Neovim buffer and may be newer than the on-disk file. Treat the provided Context as the source of truth for that file content. Do not read the same file just to verify its contents before editing, because the filesystem copy may be stale if the user has unsaved changes. Base edits on the provided buffer/selection content whenever possible.]]
 
 local BUFFER_SOURCE_OF_TRUTH_NOTE = [[NOTE: The context below comes from the current Neovim buffer and may include unsaved changes that are newer than the on-disk file. Treat this context as the source of truth for the file content, and do not read the same file only to confirm its current contents before editing.]]
 
-local EMPTY_FILE_NOTE = [[NOTE: This file is currently empty. Please create or populate it directly by applying the necessary edits so pi.nvim can write the file.]]
+local EMPTY_FILE_NOTE = [[NOTE: This file is currently empty. Please create or populate it directly by applying the necessary edits so ai.nvim can write the file.]]
 
 --- Returns whether a buffer contains only empty or whitespace-only lines.
 --- @param bufnr integer Buffer handle.
@@ -67,9 +67,9 @@ function M.format_prompt_label(bufnr, selection_range)
     table.insert(components, string.format("%d:%d", selection_range.start, selection_range["end"]))
   end
   if #components == 0 then
-    return "ask pi: "
+    return "ask AI: "
   end
-  return string.format("ask pi (%s): ", table.concat(components, ":"))
+  return string.format("ask AI (%s): ", table.concat(components, ":"))
 end
 
 --- Returns a buffer's filetype, defaulting to plain text.
@@ -153,7 +153,7 @@ end
 
 --- Builds an optional diagnostics block for the current buffer or selection.
 --- @param bufnr integer Buffer handle.
---- @param config table Active pi.nvim configuration.
+--- @param config table Active ai.nvim configuration.
 --- @param opts? table Optional range filter.
 --- @return string|nil block Formatted diagnostics block.
 --- @return string|nil note Optional trimming note.
@@ -200,15 +200,15 @@ local function diagnostics_block(bufnr, config, opts)
   return content_block(label, content), note
 end
 
---- Returns the system prompt appended to pi invocations.
+--- Returns the system prompt appended to AI agent invocations.
 --- @return string prompt Internal system prompt.
 function M.get_system_prompt()
   return SYSTEM_PROMPT
 end
 
---- Builds prompt context for `:PiAsk` around the current cursor line.
+--- Builds prompt context for `:Ai ask` around the current cursor line.
 --- @param bufnr integer Buffer handle.
---- @param config table Active pi.nvim configuration.
+--- @param config table Active ai.nvim configuration.
 --- @return string context Prompt context payload.
 function M.get_buffer_context(bufnr, config)
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -249,9 +249,9 @@ function M.get_buffer_context(bufnr, config)
   return table.concat(parts, "\n\n")
 end
 
---- Builds prompt context for `:PiAskSelection`.
+--- Builds prompt context for `:Ai selection`.
 --- @param bufnr integer Buffer handle.
---- @param config table Active pi.nvim configuration.
+--- @param config table Active ai.nvim configuration.
 --- @return string context Prompt context payload.
 function M.get_visual_context(bufnr, config)
   local filename = vim.api.nvim_buf_get_name(bufnr)

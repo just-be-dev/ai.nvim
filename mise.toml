@@ -1,0 +1,38 @@
+[tools]
+neovim = "0.12.3"
+
+[settings]
+experimental = true
+pin = true
+
+[hooks]
+postinstall = "mise run deps"
+
+[tasks.deps]
+description = "Install test dependencies"
+run = '''
+MINI_TEST_PATH="${MINI_TEST_PATH:-deps/mini.test}"
+mkdir -p "$(dirname "$MINI_TEST_PATH")"
+if [ ! -d "$MINI_TEST_PATH" ]; then
+  git clone --depth 1 https://github.com/echasnovski/mini.test.git "$MINI_TEST_PATH"
+fi
+'''
+
+[tasks.test]
+description = "Run plugin test suite"
+depends = ["deps"]
+run = '${NVIM:-nvim} --headless --noplugin -u tests/minimal_init.lua -c "luafile scripts/run_tests.lua"'
+
+[tasks.test-verbose]
+description = "Run plugin test suite with verbose output"
+depends = ["deps"]
+run = '${NVIM:-nvim} --headless --noplugin -u tests/minimal_init.lua -c "luafile scripts/run_tests.lua"'
+
+[tasks.test-interactive]
+description = "Run tests in interactive Neovim"
+depends = ["deps"]
+run = '''${NVIM:-nvim} -u tests/minimal_init.lua -c "lua require('mini.test').setup()" -c "lua MiniTest.run_file('tests/test_ai_commands.lua')"'''
+
+[tasks.clean]
+description = "Remove generated test dependencies"
+run = "rm -rf deps"

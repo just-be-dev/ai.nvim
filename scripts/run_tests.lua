@@ -1,4 +1,4 @@
--- Test runner for pi.nvim using mini.test
+-- Test runner for ai.nvim using mini.test
 -- Run with: nvim --headless -u tests/minimal_init.lua -c "luafile scripts/run_tests.lua"
 
 -- Ensure mini.test is available
@@ -20,7 +20,7 @@ MiniTest.setup({
 })
 
 -- Run the test file
-MiniTest.run_file('tests/test_pi_commands.lua')
+MiniTest.run_file('tests/test_ai_commands.lua')
 
 -- Exit with appropriate code
 vim.cmd('qa!')
